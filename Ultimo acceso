@@ -1,0 +1,323 @@
+1|// Native storage (Metro auto-picks index.web.ts on web — do NOT add Platform.OS checks).
+2|//
+3|// Import the ready-made singleton BY NAME and call methods on it — never a default
+4|// import, never the methods bare:
+5|//   import { storage } from "@/src/utils/storage";
+6|//   await storage.getItem(key, fallback);      // the `fallback` arg is REQUIRED
+7|//
+8|// Namespaces: general KV -> getItem/setItem/removeItem (AsyncStorage);
+9|//             tokens/secrets -> secureGet/secureSet/secureRemove (Keychain).
+10|// Values are auto JSON-serialized (string|number|boolean|null) in this implementation — never JSON.stringify/parse yourself.
+11|// Helpers NEVER throw: a miss returns `fallback`, a failed write returns `false` (failures are SILENT).
+12|// 
+13|// Use async/await for all storage operations.
+14|//
+15|// AUTH TOKENS: use ONE namespace (secure*) + ONE shared key constant, and read/write it the SAME
+16|// way on both sides — the login/AuthContext (write) and the API client/interceptor (read). A
+17|// mismatched method or key silently returns the fallback, surfacing as a logged-out state or 401/403
+18|// with no error in the logs.
+19|//
+20|// KEY NAMES: expo-secure-store only accepts [A-Za-z0-9._-]. A key like "auth:token" or "user/session"
+21|// makes every secureSet throw on a phone; the helper swallows it, so the token is never saved and
+22|// login/sign-up silently loop. The web preview does not catch this (no Keychain there).
+23|// Use plain names: "auth_token", "refresh_token".
+24|
+25|import AsyncStorage from "@react-native-async-storage/async-storage";
+26|import * as SecureStore from "expo-secure-store";
+27|
+28|import { AssertNoExtras, StorageBase, StorageItemValue } from "./storage-base";
+29|
+30|export class Storage extends StorageBase {
+31|  // General KV — backed by AsyncStorage.
+32|  // `fallback` is required and returned on any miss/parse error — a missing key looks identical to a stored `null`.
+33|  async getItem<Fallback extends StorageItemValue>(
+34|    key: string,
+35|    fallback: Fallback,
+36|  ): Promise<Fallback | null> {
+37|    try {
+38|      const raw = await AsyncStorage.getItem(key);
+39|      return this.retrieve(raw, fallback);
+40|    } catch (e) {
+41|      this.warn("getItem", key, e);
+42|      return fallback;
+43|    }
+44|  }
+45|
+46|  async setItem<Value extends StorageItemValue>(
+47|    key: string,
+48|    value: Value,
+49|  ): Promise<boolean> {
+50|    try {
+51|      await AsyncStorage.setItem(key, JSON.stringify(value));
+52|      return true;
+53|    } catch (e) {
+54|      this.warn("setItem", key, e);
+55|      return false;
+56|    }
+57|  }
+58|
+59|  async removeItem(key: string): Promise<boolean> {
+60|    try {
+61|      await AsyncStorage.removeItem(key);
+62|      return true;
+63|    } catch (e) {
+64|      this.warn("removeItem", key, e);
+65|      return false;
+66|    }
+67|  }
+68|
+69|  // Sensitive values — Keychain (iOS) / EncryptedSharedPreferences (Android).
+70|  // Use these (not getItem) for auth tokens; whatever writes with secureSet must read with secureGet under the same key.
+71|  // Key must match /^[A-Za-z0-9._-]+$/ — no ":", "/" or spaces — or SecureStore throws and nothing is stored.
+72|  async secureGet<Fallback extends StorageItemValue>(
+73|    key: string,
+74|    fallback: Fallback,
+75|  ): Promise<Fallback | null> {
+76|    try {
+77|      const raw = await SecureStore.getItemAsync(key);
+78|      return this.retrieve(raw, fallback);
+79|    } catch (e) {
+80|      this.warn("secureGet", key, e);
+81|      return fallback;
+82|    }
+83|  }
+84|
+85|  async secureSet<Value extends StorageItemValue>(
+86|    key: string,
+87|    value: Value,
+88|  ): Promise<boolean> {
+89|    try {
+90|      await SecureStore.setItemAsync(key, JSON.stringify(value));
+91|      return true;
+92|    } catch (e) {
+93|      this.warn("secureSet", key, e);
+94|      return false;
+95|    }
+96|  }
+97|
+98|  async secureRemove(key: string): Promise<boolean> {
+99|    try {
+100|      await SecureStore.deleteItemAsync(key);
+101|      return true;
+102|    } catch (e) {
+103|      this.warn("secureRemove", key, e);
+104|      return false;
+105|    }
+106|  }
+107|}
+108|
+109|// The shared singleton — import THIS (`import { storage } from "@/src/utils/storage"`). Do not `new Storage()`.
+110|export const storage = new Storage();
+111|
+112|// Compile-time guard: any new method must be declared in storage-base.ts first.
+113|// eslint-disable-next-line @typescript-eslint/no-unused-vars -- intentional compile-time-only assertion
+114|type _NoExtras = AssertNoExtras<Exclude<keyof Storage, keyof StorageBase>>;
+
+===END
+
+===FILE: /app/frontend/src/utils/storage/index.web.ts
+/app/frontend/src/utils/storage/index.web.ts:
+1|// Web storage (Metro picks index.ts on native).
+2|// Helpers never throw: reads return `fallback`, writes return `false`.
+3|// Values supported: string | number | boolean | null (JSON-serialized on disk).
+4|// Usage: import { storage } from "@/src/utils/storage"; await storage.getItem(key, fallback);
+5|// No Keychain on web — secure* helpers reuse AsyncStorage (no expo-secure-store).
+6|// Because of that, a key SecureStore rejects on native (":" "/" spaces) works here, so the web preview
+7|// never shows the bug. Keep secure keys to [A-Za-z0-9._-] ("auth_token"), same as index.ts.
+8|
+9|import AsyncStorage from "@react-native-async-storage/async-storage";
+10|
+11|import { AssertNoExtras, StorageBase, StorageItemValue } from "./storage-base";
+12|
+13|export class Storage extends StorageBase {
+14|  // General KV — backed by AsyncStorage (its built-in web shim uses IndexedDB).
+15|  async getItem<Fallback extends StorageItemValue>(
+16|    key: string,
+17|    fallback: Fallback,
+18|  ): Promise<Fallback | null> {
+19|    try {
+20|      const raw = await AsyncStorage.getItem(key);
+21|      return this.retrieve(raw, fallback);
+22|    } catch (e) {
+23|      this.warn("getItem", key, e);
+24|      return fallback;
+25|    }
+26|  }
+27|
+28|  async setItem<Value extends StorageItemValue>(
+29|    key: string,
+30|    value: Value,
+31|  ): Promise<boolean> {
+32|    try {
+33|      await AsyncStorage.setItem(key, JSON.stringify(value));
+34|      return true;
+35|    } catch (e) {
+36|      this.warn("setItem", key, e);
+37|      return false;
+38|    }
+39|  }
+40|
+41|  async removeItem(key: string): Promise<boolean> {
+42|    try {
+43|      await AsyncStorage.removeItem(key);
+44|      return true;
+45|    } catch (e) {
+46|      this.warn("removeItem", key, e);
+47|      return false;
+48|    }
+49|  }
+50|
+51|  // Browsers have no Keychain — secure* helpers fall through to AsyncStorage.
+52|  async secureGet<Fallback extends StorageItemValue>(
+53|    key: string,
+54|    fallback: Fallback,
+55|  ): Promise<Fallback | null> {
+56|    return this.getItem(key, fallback);
+57|  }
+58|
+59|  async secureSet<Value extends StorageItemValue>(
+60|    key: string,
+61|    value: Value,
+62|  ): Promise<boolean> {
+63|    return this.setItem(key, value);
+64|  }
+65|
+66|  async secureRemove(key: string): Promise<boolean> {
+67|    return this.removeItem(key);
+68|  }
+69|}
+70|
+71|export const storage = new Storage();
+72|
+73|// Compile-time guard: any new method must be declared in storage-base.ts first.
+74|// eslint-disable-next-line @typescript-eslint/no-unused-vars -- intentional compile-time-only assertion
+75|type _NoExtras = AssertNoExtras<Exclude<keyof Storage, keyof StorageBase>>;
+76|
+
+===END
+
+===FILE: /app/frontend/src/utils/storage/storage-base.ts
+/app/frontend/src/utils/storage/storage-base.ts:
+1|// Abstract base for the storage wrapper — shared types + helpers.
+2|// Concrete implementations live in index.ts (native) and index.web.ts (web).
+3|
+4|export type StorageItemKey = string;
+5|export type StorageItemValue = string | number | boolean | null;
+6|
+7|// Helper for subclasses to enforce that they don't declare methods beyond
+8|// StorageBase. Use as: type _ = AssertNoExtras<Exclude<keyof Storage, keyof StorageBase>>;
+9|export type AssertNoExtras<T extends never> = T;
+10|
+11|export abstract class StorageBase {
+12|  protected warn(op: string, key: StorageItemKey, e: unknown) {
+13|    console.warn(`[storage] ${op}(${key}) failed`, e);
+14|  }
+15|
+16|  // raw is whatever AsyncStorage / SecureStore returned: a JSON-encoded string
+17|  // (because setItem always JSON.stringifies) or null if the key was missing.
+18|  // We always JSON.parse so values round-trip correctly across types.
+19|  protected retrieve<Fallback extends StorageItemValue>(
+20|    raw: string | null,
+21|    fallback: Fallback,
+22|  ): Fallback | null {
+23|    if (raw === null) return fallback;
+24|    try {
+25|      return JSON.parse(raw) as Fallback;
+26|    } catch (e) {
+27|      this.warn("retrieve", "parse error", e);
+28|      return fallback;
+29|    }
+30|  }
+31|
+32|  abstract getItem<Fallback extends StorageItemValue>(
+33|    key: string,
+34|    fallback: Fallback,
+35|  ): Promise<Fallback | null>;
+36|  abstract setItem<Value extends StorageItemValue>(
+37|    key: string,
+38|    value: Value,
+39|  ): Promise<boolean>;
+40|  abstract removeItem(key: string): Promise<boolean>;
+41|  abstract secureGet<Fallback extends StorageItemValue>(
+42|    key: string,
+43|    fallback: Fallback,
+44|  ): Promise<Fallback | null>;
+45|  abstract secureSet<Value extends StorageItemValue>(
+46|    key: string,
+47|    value: Value,
+48|  ): Promise<boolean>;
+49|  abstract secureRemove(key: string): Promise<boolean>;
+50|}
+51|
+
+===END
+
+===FILE: /app/frontend/src/utils/upload.ts
+/app/frontend/src/utils/upload.ts:
+1|// Multipart upload that works in BOTH runtimes. Use this for every file upload; never
+2|// build the FormData part yourself.
+3|//
+4|//   import { uploadForm } from "@/src/utils/upload";
+5|//   const res = await uploadForm(`${BACKEND_URL}/api/photos`, {
+6|//     fields: { caption },
+7|//     files: { image: { uri: asset.uri, name: "photo.jpg", mimeType: asset.mimeType } },
+8|//   });
+9|//
+10|// Why: on a phone the global fetch is `expo/fetch` (SDK 54+), which rejects the old RN
+11|// `{ uri, name, type }` part with "Unsupported FormDataPart implementation". The web
+12|// preview accepts that shape, so the bug only shows on a device. Never set Content-Type:
+13|// the runtime adds the multipart boundary. No extra dependency: `expo/fetch` reads
+14|// `file://` on iOS and Android itself (React Native's own fetch cannot on Android).
+15|
+16|import { Platform } from "react-native";
+17|import { fetch as expoFetch } from "expo/fetch";
+18|
+19|export type LocalFile = {
+20|  uri: string; // asset.uri from expo-image-picker / expo-document-picker / expo-audio
+21|  name?: string; // "photo.jpg"; last path segment of uri when omitted
+22|  mimeType?: string; // asset.mimeType, e.g. "image/jpeg"
+23|};
+24|
+25|export type UploadOptions = {
+26|  files: Record<string, LocalFile>; // form field name -> file
+27|  fields?: Record<string, string>;
+28|  method?: "POST" | "PUT";
+29|  headers?: Record<string, string>; // auth only; never Content-Type
+30|  signal?: AbortSignal;
+31|};
+32|
+33|export function fileNameFor(file: LocalFile): string {
+34|  return file.name || file.uri.split("?")[0].split("/").pop() || "file";
+35|}
+36|
+37|// Turn a local file into a part that the current runtime's fetch can serialise.
+38|export async function toFormDataPart(file: LocalFile): Promise<Blob> {
+39|  if (Platform.OS === "web") {
+40|    // blob:/data: URL from the browser picker; the browser fetch reads it fine.
+41|    const blob = await (await fetch(file.uri)).blob();
+42|    const type = file.mimeType || blob.type;
+43|    return type && type !== blob.type ? new Blob([blob], { type }) : blob;
+44|  }
+45|  // Native: read the local file through expo/fetch (never the RN fetch) and append the Blob.
+46|  const blob = await (await expoFetch(file.uri)).blob();
+47|  return file.mimeType && file.mimeType !== blob.type ? new Blob([blob], { type: file.mimeType }) : blob;
+48|}
+49|
+50|export async function uploadForm(url: string, opts: UploadOptions): Promise<Response> {
+51|  const form = new FormData();
+52|  for (const [k, v] of Object.entries(opts.fields ?? {})) form.append(k, v);
+53|  for (const [field, file] of Object.entries(opts.files)) {
+54|    form.append(field, await toFormDataPart(file), fileNameFor(file));
+55|  }
+56|  const init = {
+57|    method: opts.method ?? "POST",
+58|    body: form,
+59|    headers: opts.headers, // the runtime adds the multipart boundary
+60|    signal: opts.signal,
+61|  };
+62|  // Branch the call, not the function reference: the two fetches have different RequestInit types.
+63|  return Platform.OS === "web" ? fetch(url, init) : expoFetch(url, init);
+64|}
+65|
+
+===END
